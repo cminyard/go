@@ -7,7 +7,9 @@
 // This is base code that all target lagnages should need.
 
 %{
+#include <gensio/gensioosh>
 #include <gensio/gensio>
+#include <gensio/gensiomdns>
 using namespace gensios;
 %}
 
