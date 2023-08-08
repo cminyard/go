@@ -349,6 +349,12 @@ type Event interface {
 	// An error occurred parsing parameters
 	Parmlog(s string)
 
+	// A window size event
+	WinSize(height uint, width uint)
+
+	// A general gensio log
+	Log(level Gensio_log_levels, log string) int
+
 	// An event in the user event range, this will only happen for
 	// custom gensios.
 	UserEvent(event int, err int, userdata *[]byte,
@@ -716,11 +722,35 @@ type MDNSWatchFreeDoneBase struct {
 	od *rawMDNSWatchFreeDoneBase
 }
 
+// ev values for the Event callback below.  I couldn't find an easy
+// way to make SWIG include these.
+var MDNS_SERVICE_ERROR = int(GENSIO_MDNS_SERVICE_ERROR)
+var MDNS_SERVICE_READY int = int(GENSIO_MDNS_SERVICE_READY)
+var MDNS_SERVICE_READY_NEW_NAME = int(GENSIO_MDNS_SERVICE_READY_NEW_NAME)
+var MDNS_SERVICE_REMOVED int = int(GENSIO_MDNS_SERVICE_REMOVED)
+
+// An event handler for MDNS Service events.  See the gensio_mdns.3 man
+// page for details.
+type MDNSServiceEvent interface {
+	Event(ev int, info string)
+
+	// Internal, do not use
+	getMDNSServiceEventBase() *MDNSServiceEventBase
+}
+
+// This type must be the first entry in your event-handling callback
+// for an MDNS event handler.
+type MDNSServiceEventBase struct {
+	MDNSServiceEvent
+
+	od *rawMDNSServiceEventBase
+}
+
 // state values for the Event callback below.  I couldn't find an easy
 // way to make SWIG include these.
-var MDNS_NEW_DATA int = int(GENSIO_MDNS_NEW_DATA)
-var MDNS_DATA_GONE int = int(GENSIO_MDNS_DATA_GONE)
-var MDNS_ALL_FOR_NOW int = int(GENSIO_MDNS_ALL_FOR_NOW)
+var MDNS_WATCH_NEW_DATA int = int(GENSIO_MDNS_WATCH_NEW_DATA)
+var MDNS_WATCH_DATA_GONE int = int(GENSIO_MDNS_WATCH_DATA_GONE)
+var MDNS_WATCH_ALL_FOR_NOW int = int(GENSIO_MDNS_WATCH_ALL_FOR_NOW)
 
 // An event handler for MDNS Watch events.  See the gensio_mdns.3 man
 // page for details.
@@ -746,7 +776,7 @@ type MDNS interface {
 	// This is really:
 	// AddService(interfacenum int, ipdomain int, name string,
 	//	mtype string, domain string, host string, port int,
-	//	txt []string)
+	//	txt []string[, evh MDNSServiceEvent])
 	AddService(interfacenum int, ipdomain int, a ...interface{}) MDNSService
 
 	// This is really:
@@ -1133,6 +1163,13 @@ func (e *EventBase) Request2fa() (int, []byte) {
 func (e *EventBase) Parmlog(s string) {
 }
 
+func (e *EventBase) WinSize(height uint, width uint) {
+}
+
+func (e *EventBase) Log(level Gensio_log_levels, log string) int {
+	return GE_NOTSUP
+}
+
 func (e *EventBase) UserEvent(event int, err int,
 			      userdata *[]byte, auxdata []string) int {
 	return GE_NOTSUP
@@ -1200,6 +1237,14 @@ func (e *raweventBase) Request_2fa(val *[]byte) int {
 
 func (e *raweventBase) Parmlog(s string) {
 	e.sube.Parmlog(s)
+}
+
+func (e *raweventBase) Win_size(height uint, width uint) {
+	e.sube.WinSize(height, width)
+}
+
+func (e *raweventBase) Log(level Gensio_log_levels, s string) int {
+	return e.sube.Log(level, s)
 }
 
 func (e *raweventBase) User_event(event int, err int,
@@ -1298,6 +1343,14 @@ func (e *rawserialEventBase) Request_2fa(val *[]byte) int {
 
 func (e *rawserialEventBase) Parmlog(s string) {
 	e.subse.Parmlog(s)
+}
+
+func (e *rawserialEventBase) Win_size(height uint, width uint) {
+	e.subse.WinSize(height, width)
+}
+
+func (e *rawserialEventBase) Log(level Gensio_log_levels, s string) int {
+	return e.subse.Log(level, s)
 }
 
 func (e *rawserialEventBase) User_event(event int, err int,
@@ -2065,6 +2118,40 @@ func (od *MDNSWatchEventBase) destroy() {
 	atomic.AddUint32(&GCCount, 1)
 }
 
+type rawMDNSServiceEventBase struct {
+	RawMDNS_Service_Event
+	subd MDNSServiceEvent
+}
+
+func (od *MDNSServiceEventBase) getMDNSServiceEventBase() *MDNSServiceEventBase {
+	return od
+}
+
+func (od *rawMDNSServiceEventBase) Event(ev Gensio_mdns_service_event,
+					 info string) {
+	if od.subd == nil {
+		return
+	}
+	od.subd.Event(int(ev), info)
+}
+
+func setupMDNSServiceEvent(od MDNSServiceEvent) RawMDNS_Service_Event {
+	odb := od.getMDNSServiceEventBase()
+	odb.od = &rawMDNSServiceEventBase{}
+	odb.od.subd = od
+	odb.od.RawMDNS_Service_Event = NewDirectorMDNS_Service_Event(odb.od)
+	runtime.SetFinalizer(odb, destroyer.destroy)
+	return odb.od
+}
+
+func (od *MDNSServiceEventBase) destroy() {
+	DeleteRawMDNS_Service_Event(od.od)
+	if Debug {
+		fmt.Println("MDNS Service Event destroy")
+	}
+	atomic.AddUint32(&GCCount, 1)
+}
+
 type mDNSO struct {
 	rm RawMDNS
 }
@@ -2072,7 +2159,7 @@ type mDNSO struct {
 func (m *mDNSO) AddService(interfacenum int, ipdomain int,
 		a ...interface{}) MDNSService {
 	argc := len(a)
-	if argc != 6 {
+	if argc < 6 || argc > 7 {
 		panic("Warong number of parameters to AddService")
 	}
 	var vname string
@@ -2109,9 +2196,17 @@ func (m *mDNSO) AddService(interfacenum int, ipdomain int,
 		host = &vhost
 	}
 
-	rs := m.rm.Add_service(interfacenum, ipdomain, name, mtype,
-		domain, host, a[4].(int), a[5].([]string))
-	s := &mDNSServiceO{rs}
+	var s *mDNSServiceO = nil
+	if (argc > 6) {
+		rseh := setupMDNSServiceEvent(a[6].(MDNSServiceEvent))
+		rs := m.rm.Add_service(interfacenum, ipdomain, name, mtype,
+			domain, host, a[4].(int), a[5].([]string), rseh)
+		s = &mDNSServiceO{rs, rseh}
+	} else {
+		rs := m.rm.Add_service(interfacenum, ipdomain, name, mtype,
+			domain, host, a[4].(int), a[5].([]string))
+		s = &mDNSServiceO{rs, nil}
+	}
 	runtime.SetFinalizer(s, destroyer.destroy)
 	return s
 }
@@ -2191,6 +2286,7 @@ func (m *mDNSO) Free(mfd MDNSFreeDone) {
 
 type mDNSServiceO struct {
 	rs RawMDNS_Service
+	rse RawMDNS_Service_Event
 }
 
 func (ms *mDNSServiceO) destroy() {
@@ -2201,7 +2297,12 @@ func (ms *mDNSServiceO) destroy() {
 	if ms.rs != nil {
 		rs := ms.rs
 		ms.rs = nil
-		DeleteRawMDNS_Service(rs)
+		rs.Free()
+	}
+	if ms.rse != nil {
+		r := ms.rse.(*rawMDNSServiceEventBase)
+		r.subd = nil
+		ms.rse = nil
 	}
 }
 
@@ -2211,7 +2312,7 @@ func (ms *mDNSServiceO) Free() {
 	}
 	rs := ms.rs
 	ms.rs = nil
-	DeleteRawMDNS_Service(rs)
+	rs.Free()
 }
 
 type mDNSWatchO struct {
