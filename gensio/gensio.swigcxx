@@ -21,6 +21,7 @@
 %rename(rawSerial_Event) gensios::Serial_Event;
 %rename(rawGensio_Open_Done) gensios::Gensio_Open_Done;
 %rename(rawGensio_Close_Done) gensios::Gensio_Close_Done;
+%rename(rawGensio_Control_Done) gensios::Gensio_Control_Done;
 %rename(rawSerial_Op_Done) gensios::Serial_Op_Done;
 %rename(rawSerial_Op_Sig_Done) gensios::Serial_Op_Sig_Done;
 %rename(rawAccepter_Event) gensios::Accepter_Event;
@@ -62,8 +63,16 @@
 			       gensio_time *timeout = NULL, bool intr = false);
 %ignore gensios::Gensio::control(int depth, bool get, unsigned int option,
 				char *data, gensiods *datalen);
+%ignore gensios::Gensio::acontrol_s(int depth, bool get, unsigned int option,
+				    char *data, gensiods *datalen);
 %ignore gensios::Accepter::control(int depth, bool get, unsigned int option,
 				  char *data, gensiods *datalen);
+
+// Ignore these for now.
+%ignore gensios::Addr::getaddr(std::vector<unsigned char> &rvec);
+%ignore gensios::Addr::get_data(std::vector<unsigned char> &rvec);
+%ignore gensios::Addr::getaddr(void *oaddr, gensiods *len);
+%ignore gensios::Addr::get_data(void *oaddr, gensiods *len);
 
 // Convert betwen byte arrays and unsigned char vectors.
 %typemap(gotype) (std::vector<unsigned char>) "[]byte";
@@ -139,10 +148,30 @@
     $1 = (char *) $input.array;
     $2 = $input.cap;
 }
+%typemap(gotype) (const char *data, gensiods datalen) "[]byte";
+%typemap(in) (const char *data, gensiods datalen) {
+    $1 = (char *) $input.array;
+    $2 = $input.cap;
+}
 %extend gensios::Gensio {
     int control(int depth, bool get, unsigned int option,
 		char *data, gensiods len, gensiods *rlen) {
 	int rv = self->control(depth, get, option, data, &len);
+	*rlen = len;
+	return rv;
+    }
+    // Here so we can pass a NULL to the done parameters.  You can't do
+    // that otherwise in go.
+    int acontrol_nodone(int depth, bool get, unsigned int option,
+			const char *data, gensiods datalen,
+			gensio_time *timeout = NULL) {
+	return self->acontrol(depth, get, option, data, datalen, NULL, timeout);
+    }
+    int acontrol_s(int depth, bool get, unsigned int option,
+		   char *data, gensiods len, gensiods *rlen,
+		   gensio_time *timeout = NULL, bool intr = false) {
+	int rv = self->acontrol_s(depth, get, option, data, &len, timeout,
+				  intr);
 	*rlen = len;
 	return rv;
     }
